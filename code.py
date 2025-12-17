@@ -26,18 +26,12 @@ torch.manual_seed(seed)
 # 数据处理
 print("清洗数据中")
 df = pd.read_csv('IoT_Intrusion.csv')
-
-
-# 清洗无穷值与缺失值
 def clean_dataset(df):
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     df.dropna(inplace=True)
     return df
-
-
 df = clean_dataset(df)
 
-# 标签合并
 target_col = 'label'
 label_group_map = {
     'DDoS-ICMP_Flood': 'DDoS', 'DDoS-UDP_Flood': 'DDoS', 'DDoS-TCP_Flood': 'DDoS',
@@ -63,15 +57,13 @@ label_group_map = {
 }
 df[target_col] = df[target_col].map(label_group_map).fillna(df[target_col])
 
-# 标签编码
 label_encoder = LabelEncoder()
 y_encoded = label_encoder.fit_transform(df[target_col])
-# 提取特征名称
 feature_names = df.drop(columns=[target_col]).columns.tolist()
 X_values = df.drop(columns=[target_col]).values
 
 print(f"标签分布: {Counter(y_encoded)}")
-del df  # 释放内存
+del df  
 gc.collect()
 
 print("切分数据 (Train/Val/Test)")
@@ -81,11 +73,9 @@ X_train_raw, X_temp, y_train_raw, y_temp = train_test_split(
 X_val_raw, X_test_raw, y_val, y_test = train_test_split(
     X_temp, y_temp, test_size=0.5, random_state=seed, stratify=y_temp
 )
-
 print(f"训练集: {X_train_raw.shape}, 验证集: {X_val_raw.shape}, 测试集: {X_test_raw.shape}")
 
 print("\nGBDT模型：")
-
 #LightGBM
 print("训练 LightGBM： ")
 lgbm = lgb.LGBMClassifier(
@@ -97,7 +87,6 @@ lgbm = lgb.LGBMClassifier(
     random_state=seed,
     n_jobs=-1
 )
-
 lgbm.fit(
     X_train_raw, y_train_raw,
     eval_set=[(X_val_raw, y_val)],
@@ -122,7 +111,6 @@ xgb_clf = xgb.XGBClassifier(
     n_jobs=-1,
     early_stopping_rounds=50
 )
-
 xgb_clf.fit(
     X_train_raw, y_train_raw,
     sample_weight=sample_weights, # 传入样本权重处理不平衡
@@ -130,20 +118,16 @@ xgb_clf.fit(
     verbose=200
 )
 
-
-#TabNet 分支
-#SMOTE混合采样、StandardScaler、预训练
+#TabNet
 print("\nTabNet：")
 
 #SMOTE + UnderSampling
 original_counts = Counter(y_train_raw)
-min_limit = 2000   # 小类补到 2000
-max_limit = 50000  # 大类砍到 50000
-
+min_limit = 2000  
+max_limit = 50000  
 sampling_strategy_over = {cls: min_limit for cls, count in original_counts.items() if count < min_limit}
 sampling_strategy_under = {cls: max_limit for cls, count in original_counts.items() if count > max_limit}
 
-# 如果没有需要采样的类，Pipeline 会自动跳过
 pipeline_steps = []
 if sampling_strategy_over:
     pipeline_steps.append(('o', SMOTE(sampling_strategy=sampling_strategy_over, random_state=seed)))
@@ -160,13 +144,11 @@ else:
 
 print(f"TabNet 训练集形状: {X_train_tab.shape}")
 
-# 标准化
 scaler = StandardScaler()
 X_train_tab = scaler.fit_transform(X_train_tab)
 X_val_tab = scaler.transform(X_val_raw)
 X_test_tab = scaler.transform(X_test_raw)
 
-#TabNet 预训练
 tabnet_params = dict(
     n_d=64, n_a=64, n_steps=5,
     optimizer_fn=torch.optim.Adam,
@@ -179,11 +161,10 @@ tabnet_params = dict(
 
 print("TabNet 预训练：")
 unsupervised_model = TabNetPretrainer(**tabnet_params)
-
 unsupervised_model.fit(
     X_train=X_train_tab,
     eval_set=[X_val_tab],
-    max_epochs=15, # 预训练轮数
+    max_epochs=15,
     patience=5,
     batch_size=2048,
     virtual_batch_size=128,
@@ -191,8 +172,6 @@ unsupervised_model.fit(
     drop_last=False,
     pretraining_ratio=0.5
 )
-
-# TabNet 分类器
 print("训练 TabNet：")
 clf_tabnet = TabNetClassifier(**tabnet_params)
 
@@ -216,30 +195,17 @@ import shap
 
 # 动态权重融合
 print("\n寻找最佳融合权重：")
-
-# 获取验证集上的概率预测
 probs_val_lgbm = lgbm.predict_proba(X_val_raw)
 probs_val_xgb = xgb_clf.predict_proba(X_val_raw)
 probs_val_tabnet = clf_tabnet.predict_proba(X_val_tab)
-
-
-# 最小化 Log Loss
 def loss_func(weights):
-    # 归一化权重
     weights = np.array(weights)
     weights /= weights.sum()
-
-    # 融合概率
     final_probs = (weights[0] * probs_val_lgbm +
                    weights[1] * probs_val_xgb +
                    weights[2] * probs_val_tabnet)
-
     final_probs = np.clip(final_probs, 1e-15, 1 - 1e-15)
-
     return log_loss(y_val, final_probs)
-
-
-# 初始设定：平均分配
 init_weights = [1 / 3, 1 / 3, 1 / 3]
 bounds = [(0, 1)] * 3
 constraints = ({'type': 'eq', 'fun': lambda w: 1 - sum(w)})
@@ -252,15 +218,12 @@ print(f"最佳权重 -> LGBM: {best_weights[0]:.4f}, XGB: {best_weights[1]:.4f},
 probs_test_lgbm = lgbm.predict_proba(X_test_raw)
 probs_test_xgb = xgb_clf.predict_proba(X_test_raw)
 probs_test_tab = clf_tabnet.predict_proba(X_test_tab)
-
-#加权融合
 final_test_probs = (best_weights[0] * probs_test_lgbm +
                     best_weights[1] * probs_test_xgb +
                     best_weights[2] * probs_test_tab)
 
 final_preds = np.argmax(final_test_probs, axis=1)
 
-#综合评估指标
 acc = accuracy_score(y_test, final_preds)
 macro_f1 = f1_score(y_test, final_preds, average='macro')
 weighted_f1 = f1_score(y_test, final_preds, average='weighted')
@@ -279,30 +242,25 @@ import os
 
 # SHAP
 print("\nSHAP 分析：")
-
-# SHAP 随机抽取样本进行解释
 sample_idx = np.random.choice(X_test_raw.shape[0], 1000, replace=False)
 X_shap_raw = X_test_raw[sample_idx]
-X_shap_tab = X_test_tab[sample_idx] # TabNet 使用标准化后的数据
-
+X_shap_tab = X_test_tab[sample_idx] 
 if not os.path.exists('results'):
     os.makedirs('results')
 #LightGBM
 print("LightGBM:")
 explainer_lgbm = shap.TreeExplainer(lgbm)
 shap_values_lgbm = explainer_lgbm.shap_values(X_shap_raw)
-
 plt.figure(figsize=(12, 8))
 shap.summary_plot(shap_values_lgbm, X_shap_raw, feature_names=feature_names, plot_type="bar", show=False)
 plt.tight_layout()
 plt.savefig('results/LGBM.png', dpi=300, bbox_inches='tight')
 plt.show()
+
 # TabNet
 print("TabNet:")
 feat_importances = clf_tabnet.feature_importances_
 indices = np.argsort(feat_importances)[::-1]
-
-#前 20 个重要特征
 top_k = 20
 top_indices = indices[:top_k]
 top_importances = feat_importances[top_indices]
@@ -315,4 +273,5 @@ plt.ylabel("Importance Score")
 plt.xlabel("feature")
 plt.tight_layout()
 plt.savefig('results/TabNet.png', dpi=300, bbox_inches='tight')
+
 plt.show()
