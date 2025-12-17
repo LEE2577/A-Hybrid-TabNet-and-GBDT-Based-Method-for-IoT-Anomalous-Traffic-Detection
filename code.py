@@ -18,7 +18,6 @@ import lightgbm as lgb
 import xgboost as xgb
 from pytorch_tabnet.tab_model import TabNetClassifier
 from pytorch_tabnet.pretraining import TabNetPretrainer
-# 全局设置
 seed = 42
 np.random.seed(seed)
 torch.manual_seed(seed)
@@ -113,14 +112,13 @@ xgb_clf = xgb.XGBClassifier(
 )
 xgb_clf.fit(
     X_train_raw, y_train_raw,
-    sample_weight=sample_weights, # 传入样本权重处理不平衡
+    sample_weight=sample_weights,
     eval_set=[(X_val_raw, y_val)],
     verbose=200
 )
 
 #TabNet
 print("\nTabNet：")
-
 #SMOTE + UnderSampling
 original_counts = Counter(y_train_raw)
 min_limit = 2000  
@@ -275,3 +273,4 @@ plt.tight_layout()
 plt.savefig('results/TabNet.png', dpi=300, bbox_inches='tight')
 
 plt.show()
+
